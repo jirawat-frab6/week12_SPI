@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "math.h"
 
 /* USER CODE END Includes */
 
@@ -32,6 +33,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define sawtooth_mode 0
+#define sine_mode 1
+#define square_mode 2
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,8 +58,10 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 uint16_t ADCin = 0;
 uint64_t _micro = 0;
-uint16_t dataOut = 0;
+uint16_t dataOut = 0,output = 0;
 uint8_t DACConfig = 0b0011;
+uint8_t mode = sine_mode,saw_inverse = 1;
+double frequency = 5,duty_cycle = 25,v_low = 1.5,v_high = 3;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,6 +75,7 @@ static void MX_TIM3_Init(void);
 static void MX_TIM11_Init(void);
 /* USER CODE BEGIN PFP */
 void MCP4922SetOutput(uint8_t Config, uint16_t DACOutput);
+uint16_t clamp_output(uint16_t input);
 uint64_t micros();
 /* USER CODE END PFP */
 
@@ -123,16 +131,22 @@ int main(void)
 	while (1)
 	{
 		static uint64_t timestamp = 0;
-		if (micros() - timestamp > 100)
+		if (micros() - timestamp > 500)
 		{
+			dataOut += 4096*(frequency*500e-6);
+			dataOut%=4096;
 			timestamp = micros();
-			dataOut++;
-			dataOut %= 4096;
+			switch (mode) {
+				case sawtooth_mode:output = saw_inverse ? 4095-dataOut:dataOut;break;
+				case sine_mode:output = sin(2*M_PI*((float)dataOut/4095))*(4095/2) + (4095/2);break;
+				case square_mode:output = dataOut > 4095*(duty_cycle/100) ? 0:4095;break;
+				default:break;
+			}
 			if (hspi3.State == HAL_SPI_STATE_READY
 					&& HAL_GPIO_ReadPin(SPI_SS_GPIO_Port, SPI_SS_Pin)
 							== GPIO_PIN_SET)
 			{
-				MCP4922SetOutput(DACConfig, dataOut);
+				MCP4922SetOutput(DACConfig, clamp_output(output));
 			}
 		}
     /* USER CODE END WHILE */
@@ -477,6 +491,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	{
 		_micro += 65535;
 	}
+}
+
+uint16_t clamp_output(uint16_t input){
+	double_t low = v_low/3.3*4095,high = v_high/3.3*4095;
+	return (uint16_t)((high-low)*((double)input/4095) + low);
+
 }
 
 inline uint64_t micros()
