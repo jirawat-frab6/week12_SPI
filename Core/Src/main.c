@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "math.h"
+#include "string.h"
+#include "stdio.h"
 
 /* USER CODE END Includes */
 
@@ -33,9 +35,20 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define sawtooth_mode 0
-#define sine_mode 1
-#define square_mode 2
+enum wave_form{
+	sawtooth_mode,
+	sine_mode,
+	square_mode
+};
+enum uart_display_state{
+	main_state,
+	wave_config_state,
+	frequency_config_state,
+	voltage_config_state,
+	duty_config_state,
+	spacing,
+	endd
+};
 
 /* USER CODE END PD */
 
@@ -60,8 +73,13 @@ uint16_t ADCin = 0;
 uint64_t _micro = 0;
 uint16_t dataOut = 0,output = 0;
 uint8_t DACConfig = 0b0011;
-uint8_t mode = sine_mode,saw_inverse = 1;
-double frequency = 5,duty_cycle = 25,v_low = 1.5,v_high = 3;
+uint8_t mode = sawtooth_mode,saw_inverse = 1;
+
+double frequency = 5,v_low = 1.5,v_high = 3,duty_cycle = 25;
+char recieveRx[45] = "";
+uint8_t state = main_state,toggle = 0;
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,13 +88,15 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_SPI3_Init(void);
-static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM11_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void MCP4922SetOutput(uint8_t Config, uint16_t DACOutput);
 uint16_t clamp_output(uint16_t input);
 uint64_t micros();
+int16_t UARTRecieveIT();
+void print(uint8_t input);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -115,25 +135,86 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_SPI3_Init();
-  MX_ADC1_Init();
   MX_TIM3_Init();
   MX_TIM11_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 	HAL_TIM_Base_Start(&htim3);
 	HAL_TIM_Base_Start_IT(&htim11);
 	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) &ADCin, 1);
 
 	HAL_GPIO_WritePin(LOAD_GPIO_Port, LOAD_Pin, GPIO_PIN_RESET);
+
+	print(main_state);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 	while (1)
 	{
+		HAL_UART_Receive_IT(&huart2, (uint8_t*) recieveRx, 32);
+		int16_t inputchar = UARTRecieveIT();
+		if(inputchar != -1){
+			switch (state){
+			case main_state:
+				switch (inputchar){
+				case 'a':state = wave_config_state;print(wave_config_state);break;
+				case 's':state = frequency_config_state;print(frequency_config_state);break;
+				case 'd':toggle = !toggle;print(main_state);break;
+				case 'f':state = voltage_config_state;print(voltage_config_state);break;
+				case 'g':switch(mode){case sawtooth_mode:saw_inverse = !saw_inverse;print(main_state);break;case square_mode:state = duty_config_state;print(duty_config_state);}break;
+				}
+			break;
+			case wave_config_state:
+				switch (inputchar){
+				case 'a':mode = sawtooth_mode;print(wave_config_state);break;
+				case 's':mode = sine_mode;print(wave_config_state);break;
+				case 'd':mode = square_mode;print(wave_config_state);break;
+				case 'x':state = main_state;print(main_state);break;
+				}
+			break;
+			case frequency_config_state:
+				switch (inputchar){
+				case 'a':frequency += 0.1;print(frequency_config_state);break;
+				case 's':frequency += 1;print(frequency_config_state);break;
+				case 'd':if(frequency){frequency -= 0.1;}print(frequency_config_state);break;
+				case 'f':if(frequency >= 1){frequency -=1;}print(frequency_config_state);break;
+				case 'x':state = main_state;print(main_state);break;
+				}
+			break;
+			case duty_config_state:
+				switch (inputchar){
+				case 'a':duty_cycle += 10;print(duty_config_state);break;
+				case 's':duty_cycle += 1;print(duty_config_state);break;
+				case 'd':if(duty_cycle >= 10){duty_cycle -= 10;}print(duty_config_state);break;
+				case 'f':if(duty_cycle >= 1){duty_cycle -=1;}print(duty_config_state);break;
+				case 'x':state = main_state;print(main_state);break;
+				}
+			break;
+			case voltage_config_state:
+				switch (inputchar){
+				case 'a':if(v_low < 3.3 && v_low < v_high){v_low += 0.1;}print(voltage_config_state);break;
+				case 's':if(v_low > 0){v_low -= 0.1;}print(voltage_config_state);break;
+				case 'd':if(v_high < 3.3){v_high += 0.1;}print(voltage_config_state);break;
+				case 'f':if(v_high > 0 && v_high > v_low){v_high -= 0.1;}print(voltage_config_state);break;
+				case 'x':state = main_state;print(main_state);break;
+				}
+			break;
+			}
+		}
+
+
+
+
+
+
+
+
+		//digital output mode
 		static uint64_t timestamp = 0;
-		if (micros() - timestamp > 500)
+		if (micros() - timestamp > 5000 )
 		{
-			dataOut += 4096*(frequency*500e-6);
+			dataOut += 4096*(frequency*5000e-6);
 			dataOut%=4096;
 			timestamp = micros();
 			switch (mode) {
@@ -146,7 +227,7 @@ int main(void)
 					&& HAL_GPIO_ReadPin(SPI_SS_GPIO_Port, SPI_SS_Pin)
 							== GPIO_PIN_SET)
 			{
-				MCP4922SetOutput(DACConfig, clamp_output(output));
+				MCP4922SetOutput(DACConfig, toggle ? clamp_output(output) : 0);
 			}
 		}
     /* USER CODE END WHILE */
@@ -230,7 +311,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -273,7 +354,7 @@ static void MX_SPI3_Init(void)
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -307,7 +388,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 100;
+  htim3.Init.Prescaler = 99;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim3.Init.Period = 100;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -349,7 +430,7 @@ static void MX_TIM11_Init(void)
 
   /* USER CODE END TIM11_Init 1 */
   htim11.Instance = TIM11;
-  htim11.Init.Prescaler = 100;
+  htim11.Init.Prescaler = 99;
   htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim11.Init.Period = 65535;
   htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -497,6 +578,46 @@ uint16_t clamp_output(uint16_t input){
 	double_t low = v_low/3.3*4095,high = v_high/3.3*4095;
 	return (uint16_t)((high-low)*((double)input/4095) + low);
 
+}
+
+int16_t UARTRecieveIT(){
+
+	static uint32_t dataPos = 0;
+
+	int16_t data = -1;
+
+	if(huart2.RxXferSize - huart2.RxXferCount != dataPos){
+
+		data = recieveRx[dataPos];
+
+		dataPos = (dataPos+1)%huart2.RxXferSize;
+
+	}
+	return data;
+}
+
+
+void print(uint8_t input){
+
+	char temp[300] = "";
+	switch(mode){
+	case sawtooth_mode:sprintf(temp,"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n==============\r\nmode:sawtooth frequency:%d.%d toggle:%s inverse:%s v_low:%d.%d v_high:%d.%d\r\n",(uint8_t)frequency,(uint8_t)(frequency*10)%10,toggle ? "ON":"OFF",saw_inverse ? "ON":"OFF",(uint8_t)v_low,(uint8_t)(v_low*10)%10,(uint8_t)v_high,(uint8_t)(v_high*10)%10);break;
+	case sine_mode:sprintf(temp,"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n==============\r\nmode:sine frequency:%d.%d toggle:%s v_low:%d.%d v_high:%d.%d\r\n",(uint8_t)frequency,(uint8_t)(frequency*10)%10,toggle ? "ON":"OFF",(uint8_t)v_low,(uint8_t)(v_low*10)%10,(uint8_t)v_high,(uint8_t)(v_high*10)%10);break;
+	case square_mode:sprintf(temp,"\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n\r\n==============\r\nmode:square frequency:%d.%d toggle:%s duty cycle:%d v_low:%d.%d v_high:%d.%d\r\n",(uint8_t)frequency,(uint8_t)(frequency*10)%10,toggle ? "ON":"OFF",(uint8_t)duty_cycle,(uint8_t)v_low,(uint8_t)(v_low*10)%10,(uint8_t)v_high,(uint8_t)(v_high*10)%10);break;
+	}
+
+	switch(input){
+	case main_state:strcat(temp,"a:wave config\r\ns:frequency config\r\nd:toggle\r\nf:voltage config\r\n");
+					if(mode == sawtooth_mode){strcat(temp,"g:inverse\r\n");}
+					if(mode == square_mode){strcat(temp,"g:duty config\r\n");}break;
+	case wave_config_state:strcat(temp,"a:sawtooth wave\r\ns:sine wave\r\nd:squere wave\r\nx:back\r\n");break;
+	case frequency_config_state:strcat(temp,"a:+0.1 Hz\r\ns:+1 Hz\r\nd:-0.1 Hz\r\nf:-1 Hz\r\nx:back\r\n");break;
+	case duty_config_state:strcat(temp,"a:+10%\r\ns:+1%\r\nd:-10%\r\nf:-1%\r\nx:back\r\n");break;
+	case voltage_config_state:strcat(temp,"a:v_low +1\r\ns:v_low -1\r\nd:v_high +1\r\nf:v_high -1\r\nx:back\r\n");break;
+	}
+	strcat(temp,"==============\r\n");
+
+	HAL_UART_Transmit(&huart2,(uint8_t*) temp, strlen(temp), 1000);
 }
 
 inline uint64_t micros()
